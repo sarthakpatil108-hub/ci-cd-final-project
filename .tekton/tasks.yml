@@ -1,3 +1,4 @@
+---
 apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
@@ -22,44 +23,27 @@ spec:
         echo "Removing all files from ${WORKSPACE_SOURCE_PATH} ..."
         if [ -d "${WORKSPACE_SOURCE_PATH}" ] ; then
           rm -rf "${WORKSPACE_SOURCE_PATH:?}"/*
-          rm -rf "${WORKSPACE_SOURCE_PATH}"/.[!.]*
-          rm -rf "${WORKSPACE_SOURCE_PATH}"/..?*
+          if [ -z "$(ls -A ${WORKSPACE_SOURCE_PATH})" ] ; then
+            echo "Successfully deleted all files from ${WORKSPACE_SOURCE_PATH}"
+          else
+            echo "Failed to delete all files from ${WORKSPACE_SOURCE_PATH}"
+            exit 1
+          fi
         fi
-
 ---
 apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
-  name: lint
+  name: nose
 spec:
-  description: This task will run linting on the python source code.
-  workspaces:
-    - name: source
-  steps:
-    - name: run-lint
-      image: python:3.9-slim
-      workingDir: $(workspaces.source.path)
-      script: |
-        #!/usr/bin/env bash
-        set -e
-        python -m pip install --upgrade pip
-        pip install flake8
-        flake8 service --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 service --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
----
-apiVersion: tekton.dev/v1beta1
-kind: Task
-metadata:
-  name: test
-spec:
+  description: This task will run nosetests on the provided application.
   workspaces:
     - name: source
   params:
     - name: args
       description: Arguments to pass to nose
       type: string
-      default: "-v"
+      default: "-v --with-spec --spec-color"
   steps:
     - name: nosetests
       image: python:3.9-slim
@@ -67,52 +51,5 @@ spec:
       script: |
         #!/bin/bash
         set -e
-        python -m pip install --upgrade pip wheel
         pip install -r requirements.txt
         nosetests $(params.args)
-
----
-apiVersion: tekton.dev/v1beta1
-kind: Task
-metadata:
-  name: build
-spec:
-  description: This task will build the container image using Buildah.
-  params:
-    - name: IMAGE
-      description: Name of the image to build
-      type: string
-  workspaces:
-    - name: source
-  steps:
-    - name: build-image
-      image: quay.io/buildah/stable:v1.23.0
-      workingDir: $(workspaces.source.path)
-      securityContext:
-        privileged: true
-      script: |
-        #!/usr/bin/env bash
-        set -e
-        buildah bud --tls-verify=false --format=docker -t $(params.IMAGE) .
-
----
-apiVersion: tekton.dev/v1beta1
-kind: Task
-metadata:
-  name: deploy
-spec:
-  description: This task will deploy the application to OpenShift.
-  params:
-    - name: IMAGE
-      description: Name of the image to deploy
-      type: string
-  workspaces:
-    - name: source
-  steps:
-    - name: oc-deploy
-      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
-      workingDir: $(workspaces.source.path)
-      script: |
-        #!/usr/bin/env bash
-        set -e
-        oc rollout status deployment/cool-service || oc new-app --image=$(params.IMAGE) --name=cool-service || true
